@@ -1,0 +1,10 @@
+azure-ai-vision-imageanalysis==1.0.0
+azure-identity==1.23.0
+fastapi==0.115.8
+gunicorn==23.0.0
+httpx==0.28.1
+openai==1.66.3
+pydantic==2.10.6
+python-multipart==0.0.20
+tenacity==9.0.0
+uvicorn==0.34.0

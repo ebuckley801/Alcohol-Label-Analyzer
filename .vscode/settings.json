@@ -1,0 +1,18 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^source \\.venv/bin/activate && ruff format app/services/vision_extractor\\.py && ruff check \\. && mypy \\. && pytest --cov=app --cov-report=term-missing$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "ruff": true,
+        "mypy": true,
+        "pytest": true,
+        "/^source \\.venv/bin/activate && ruff check \\. && ruff format --check \\. && mypy \\. && pytest --cov=app --cov-report=term-missing$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "npm run lint": true,
+        "npm run typecheck": true,
+        "npm run build": true
+    }
+}

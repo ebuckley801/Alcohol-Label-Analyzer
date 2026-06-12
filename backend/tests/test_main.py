@@ -91,6 +91,7 @@ def test_review_endpoint_success(monkeypatch) -> None:
     body = response.json()
     assert body["compliance"]["is_compliant"] is True
     assert body["extraction"]["brand_name"] == "OLD TOM DISTILLERY"
+    assert body["extraction"]["ai_assisted_fields"] == []
 
 
 def test_review_endpoint_service_failure(monkeypatch) -> None:
@@ -175,3 +176,44 @@ def test_review_endpoint_flags_low_quality_ocr_signal(monkeypatch) -> None:
         "Image quality may be poor (angle/lighting), OCR confidence appears low. "
         "Review manually." in body["compliance"]["issues"]
     )
+
+
+def test_review_endpoint_handles_openai_fallback_failure_without_500(monkeypatch) -> None:
+    class DummyVisionService:
+        def extract_from_image(self, image_bytes: bytes, content_type: str) -> ExtractedLabelFields:
+            assert image_bytes
+            assert content_type == "image/png"
+            return ExtractedLabelFields(
+                brand_name="TANQUERAY",
+                class_type="EXPORT STRENGTH",
+                alcohol_percentage=43.1,
+                net_contents="700 cL",
+                origin_country="United Kingdom",
+                has_government_warning=False,
+                government_warning_text=None,
+                raw_text="WHOON DRY\nTanqueray\nEXPORT STRENGTH\nLONDON ORYZAN",
+            )
+
+    monkeypatch.setattr("app.main._build_vision_service", lambda: DummyVisionService())
+
+    response = client.post(
+        "/api/v1/review",
+        files={"image": ("label.png", b"fake-image", "image/png")},
+    )
+
+    assert response.status_code == 200
+
+
+def test_normalize_azure_openai_endpoint_preserves_responses_path() -> None:
+    from app.main import _normalize_azure_openai_endpoint
+
+    value = "https://treasury-app-2-resource.services.ai.azure.com/openai/v1/responses"
+    assert _normalize_azure_openai_endpoint(value) == value
+
+
+def test_normalize_azure_openai_endpoint_strips_generic_path() -> None:
+    from app.main import _normalize_azure_openai_endpoint
+
+    value = "https://example.openai.azure.com/openai/deployments/foo"
+    assert value != _normalize_azure_openai_endpoint(value)
+    assert _normalize_azure_openai_endpoint(value) == "https://example.openai.azure.com"

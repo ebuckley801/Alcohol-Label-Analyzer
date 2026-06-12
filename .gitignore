@@ -13,6 +13,9 @@ node_modules/
 frontend/node_modules/
 frontend/dist/
 
+# Frontend build output (goes to backend/static for deployment)
+backend/static/
+
 # OS
 .DS_Store
 

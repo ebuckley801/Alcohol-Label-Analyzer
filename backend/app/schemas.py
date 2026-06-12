@@ -24,6 +24,7 @@ class ExtractedLabelFields(BaseModel):
     has_government_warning: bool
     government_warning_text: str | None = None
     raw_text: str | None = None
+    ai_assisted_fields: list[str] = Field(default_factory=list)
 
 
 class LabelComplianceResult(BaseModel):

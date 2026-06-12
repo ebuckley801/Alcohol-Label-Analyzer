@@ -418,7 +418,7 @@ def test_azure_vision_extractor_combines_stacked_same_height_brand_lines() -> No
     assert result.brand_name != result.class_type
 
 
-def test_hybrid_extractor_backfills_missing_core_data() -> None:
+def test_hybrid_extractor_backfills_missing_core_data_but_not_net_contents() -> None:
     primary = _StaticExtractor(
         ExtractedLabelFields(
             brand_name="TWO HEARTED",
@@ -454,9 +454,12 @@ def test_hybrid_extractor_backfills_missing_core_data() -> None:
     result = service.extract_from_image(b"fake-image", "image/png")
 
     assert result.brand_name == "TWO HEARTED"
-    assert result.net_contents == "355 mL"
+    assert result.net_contents is None
     assert result.origin_country == "United States"
     assert result.has_government_warning is True
+    assert "origin_country" in result.ai_assisted_fields
+    assert "has_government_warning" in result.ai_assisted_fields
+    assert "net_contents" not in result.ai_assisted_fields
 
 
 def test_hybrid_extractor_prefers_fallback_when_low_quality() -> None:
@@ -497,6 +500,49 @@ def test_hybrid_extractor_prefers_fallback_when_low_quality() -> None:
     assert result.brand_name == "TWO HEARTED"
     assert result.class_type == "AMERICAN IPA"
     assert result.origin_country == "United States"
+
+
+def test_hybrid_extractor_does_not_override_net_contents_when_preferring_fallback() -> None:
+    primary = _StaticExtractor(
+        ExtractedLabelFields(
+            brand_name="DEE",
+            class_type="IPA",
+            alcohol_percentage=7.0,
+            net_contents="355 mL",
+            origin_country=None,
+            has_government_warning=False,
+            government_warning_text=None,
+            raw_text="BELL'S\nDEE\nTwo\nHearted\nIPA\n12 82\nAMERICAN IPA",
+        )
+    )
+    fallback = _StaticExtractor(
+        ExtractedLabelFields(
+            brand_name="TWO HEARTED",
+            class_type="AMERICAN IPA",
+            alcohol_percentage=7.0,
+            net_contents="473 mL",
+            origin_country="United States",
+            has_government_warning=False,
+            government_warning_text=None,
+            raw_text="fallback",
+        )
+    )
+
+    service = HybridVisionExtractorService(
+        primary=primary,
+        fallback=fallback,
+        fallback_on_missing_core_data=False,
+        fallback_on_low_quality=True,
+    )
+
+    result = service.extract_from_image(b"fake-image", "image/jpeg")
+
+    assert result.brand_name == "TWO HEARTED"
+    assert result.net_contents == "355 mL"
+    assert "brand_name" in result.ai_assisted_fields
+    assert "class_type" in result.ai_assisted_fields
+    assert "origin_country" in result.ai_assisted_fields
+    assert "net_contents" not in result.ai_assisted_fields
 
 
 def test_hybrid_extractor_uses_fallback_when_size_heuristic_was_used() -> None:

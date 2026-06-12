@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/api/client.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/api/client.ts","./src/components/alert.tsx","./src/components/badge.tsx","./src/components/button.tsx","./src/components/statscard.tsx","./src/components/themetoggle.tsx","./src/contexts/themecontext.tsx","./src/contexts/usetheme.ts","./src/utils/csvexport.ts"],"version":"5.9.3"}

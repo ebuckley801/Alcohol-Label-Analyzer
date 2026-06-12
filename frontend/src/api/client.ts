@@ -21,6 +21,7 @@ export type LabelReviewExtraction = {
   has_government_warning: boolean;
   government_warning_text: string | null;
   raw_text: string | null;
+  ai_assisted_fields: string[];
 };
 
 export type LabelReviewCompliance = {

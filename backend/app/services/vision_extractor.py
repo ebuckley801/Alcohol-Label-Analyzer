@@ -2,14 +2,14 @@ import logging
 import re
 from base64 import b64encode
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from azure.ai.vision.imageanalysis import ImageAnalysisClient
 from azure.ai.vision.imageanalysis.models import VisualFeatures
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from azure.identity import DefaultAzureCredential
-from openai import APIConnectionError, APIStatusError, AzureOpenAI
+from openai import APIConnectionError, APIStatusError, AzureOpenAI, OpenAI
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.schemas import ExtractedLabelFields
@@ -228,7 +228,7 @@ class HybridVisionExtractorService:
 
         try:
             fallback_result = self._fallback.extract_from_image(image_bytes, content_type)
-        except VisionExtractorError:
+        except (VisionExtractorError, APIConnectionError, APIStatusError):
             logger.warning("vision_fallback_extraction_failed")
             return primary_result
 
@@ -262,7 +262,6 @@ class HybridVisionExtractorService:
                 not extracted.brand_name.strip(),
                 extracted.class_type is None,
                 extracted.alcohol_percentage is None,
-                extracted.net_contents is None,
                 extracted.origin_country is None,
             )
         )
@@ -303,37 +302,70 @@ class HybridVisionExtractorService:
         fallback: ExtractedLabelFields,
         prefer_fallback: bool,
     ) -> ExtractedLabelFields:
-        def choose_text(primary_value: str | None, fallback_value: str | None) -> str | None:
+        def choose_text(
+            primary_value: str | None,
+            fallback_value: str | None,
+        ) -> tuple[str | None, bool]:
             fallback_present = fallback_value is not None and fallback_value.strip() != ""
             primary_present = primary_value is not None and primary_value.strip() != ""
 
             if prefer_fallback and fallback_present:
-                return fallback_value
+                return fallback_value, True
             if primary_present:
-                return primary_value
+                return primary_value, False
             if fallback_present:
-                return fallback_value
-            return primary_value
+                return fallback_value, True
+            return primary_value, False
 
-        merged_brand = choose_text(primary.brand_name, fallback.brand_name) or primary.brand_name
-        merged_class = self._choose_class_type(
+        merged_brand_candidate, brand_from_fallback = choose_text(
+            primary.brand_name,
+            fallback.brand_name,
+        )
+        merged_brand = merged_brand_candidate or primary.brand_name
+        merged_raw_text, _ = choose_text(primary.raw_text, fallback.raw_text)
+        merged_class, class_from_fallback = self._choose_class_type(
             primary_class=primary.class_type,
             fallback_class=fallback.class_type,
-            raw_text=choose_text(primary.raw_text, fallback.raw_text),
+            raw_text=merged_raw_text,
             brand_name=merged_brand,
             prefer_fallback=prefer_fallback,
         )
-        merged_net = choose_text(primary.net_contents, fallback.net_contents)
-        merged_origin = choose_text(primary.origin_country, fallback.origin_country)
-        merged_warning_text = choose_text(
+        # Net contents must be OCR-derived only; do not infer/guess via AI fallback.
+        merged_net = primary.net_contents
+        merged_origin, origin_from_fallback = choose_text(
+            primary.origin_country,
+            fallback.origin_country,
+        )
+        merged_warning_text, warning_text_from_fallback = choose_text(
             primary.government_warning_text,
             fallback.government_warning_text,
         )
-        merged_raw_text = choose_text(primary.raw_text, fallback.raw_text)
+        merged_has_warning = primary.has_government_warning or fallback.has_government_warning
+        warning_from_fallback = (
+            not primary.has_government_warning
+        ) and fallback.has_government_warning
 
         merged_alcohol = primary.alcohol_percentage
+        alcohol_from_fallback = False
         if merged_alcohol is None or (prefer_fallback and fallback.alcohol_percentage is not None):
             merged_alcohol = fallback.alcohol_percentage
+            alcohol_from_fallback = fallback.alcohol_percentage is not None
+
+        ai_assisted_fields: set[str] = set(primary.ai_assisted_fields) | set(
+            fallback.ai_assisted_fields
+        )
+        if brand_from_fallback:
+            ai_assisted_fields.add("brand_name")
+        if class_from_fallback:
+            ai_assisted_fields.add("class_type")
+        if alcohol_from_fallback:
+            ai_assisted_fields.add("alcohol_percentage")
+        if origin_from_fallback:
+            ai_assisted_fields.add("origin_country")
+        if warning_text_from_fallback:
+            ai_assisted_fields.add("government_warning_text")
+        if warning_from_fallback:
+            ai_assisted_fields.add("has_government_warning")
 
         return ExtractedLabelFields(
             brand_name=merged_brand,
@@ -341,10 +373,10 @@ class HybridVisionExtractorService:
             alcohol_percentage=merged_alcohol,
             net_contents=merged_net,
             origin_country=merged_origin,
-            has_government_warning=primary.has_government_warning
-            or fallback.has_government_warning,
+            has_government_warning=merged_has_warning,
             government_warning_text=merged_warning_text,
             raw_text=merged_raw_text,
+            ai_assisted_fields=sorted(ai_assisted_fields),
         )
 
     def _choose_class_type(
@@ -355,24 +387,26 @@ class HybridVisionExtractorService:
         raw_text: str | None,
         brand_name: str,
         prefer_fallback: bool,
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:
         primary_known = self._is_known_class_type(primary_class)
         fallback_known = self._is_known_class_type(fallback_class)
 
         if prefer_fallback and fallback_known:
-            return fallback_class
+            return fallback_class, True
         if primary_known:
-            return primary_class
+            return primary_class, False
         if fallback_known:
-            return fallback_class
+            return fallback_class, True
 
         derived = self._derive_class_type_from_context(raw_text=raw_text, brand_name=brand_name)
         if derived is not None:
-            return derived
+            return derived, False
 
         if prefer_fallback and fallback_class is not None:
-            return fallback_class
-        return primary_class or fallback_class
+            return fallback_class, True
+        return (primary_class or fallback_class), (
+            primary_class is None and fallback_class is not None
+        )
 
     def _is_known_class_type(self, value: str | None) -> bool:
         if value is None:
@@ -449,11 +483,21 @@ class AzureOpenAIVisionExtractorService:
         api_version: str,
     ) -> None:
         self._deployment = deployment
-        self._client = AzureOpenAI(
-            azure_endpoint=endpoint,
-            api_key=api_key,
-            api_version=api_version,
-        )
+        self._uses_responses_api = endpoint.rstrip("/").endswith("/openai/v1/responses")
+        if self._uses_responses_api:
+            responses_base_url = endpoint.rstrip("/")
+            if responses_base_url.endswith("/responses"):
+                responses_base_url = responses_base_url[: -len("/responses")]
+            self._client = OpenAI(
+                base_url=responses_base_url,
+                api_key=api_key,
+            )
+        else:
+            self._client = AzureOpenAI(
+                azure_endpoint=endpoint,
+                api_key=api_key,
+                api_version=api_version,
+            )
 
     @retry(
         stop=stop_after_attempt(3),
@@ -467,43 +511,120 @@ class AzureOpenAIVisionExtractorService:
         data_url = f"data:{content_type};base64,{encoded_image}"
 
         logger.info("vision_extraction_started")
+        content: str | None = None
         try:
-            completion = self._client.chat.completions.create(
-                model=self._deployment,
-                temperature=0,
-                max_tokens=800,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": "You are an accurate extraction engine."},
+            if self._uses_responses_api:
+                input_payload: list[dict[str, object]] = [
+                    {
+                        "role": "system",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": "You are an accurate extraction engine.",
+                            }
+                        ],
+                    },
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": PROMPT},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": data_url,
-                                },
-                            },
+                            {"type": "input_text", "text": PROMPT},
+                            {"type": "input_image", "image_url": data_url},
                         ],
                     },
-                ],
-            )
+                ]
+                completion_response = self._client.responses.create(
+                    model=self._deployment,
+                    input=cast(Any, input_payload),
+                )
+                content = self._extract_responses_text(completion_response)
+            else:
+                chat_completion = self._client.chat.completions.create(
+                    model=self._deployment,
+                    temperature=0,
+                    max_tokens=800,
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": "You are an accurate extraction engine."},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": PROMPT},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": data_url,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                )
+                content = chat_completion.choices[0].message.content
         except (APIConnectionError, APIStatusError):
             logger.exception("vision_extraction_transient_failure")
             raise
 
-        content = completion.choices[0].message.content
         if content is None:
             raise VisionExtractorError("Model returned no content")
 
         parsed = _parse_model_output(content)
         result = ExtractedLabelFields.model_validate(parsed)
+        ai_assisted_fields: list[str] = []
+        if result.brand_name.strip():
+            ai_assisted_fields.append("brand_name")
+        if result.class_type is not None and result.class_type.strip():
+            ai_assisted_fields.append("class_type")
+        if result.alcohol_percentage is not None:
+            ai_assisted_fields.append("alcohol_percentage")
+        if result.net_contents is not None and result.net_contents.strip():
+            ai_assisted_fields.append("net_contents")
+        if result.origin_country is not None and result.origin_country.strip():
+            ai_assisted_fields.append("origin_country")
+        if result.has_government_warning:
+            ai_assisted_fields.append("has_government_warning")
+        if result.government_warning_text is not None and result.government_warning_text.strip():
+            ai_assisted_fields.append("government_warning_text")
+        result = result.model_copy(update={"ai_assisted_fields": ai_assisted_fields})
         logger.info(
             "vision_extraction_completed",
             extra={"has_warning": result.has_government_warning},
         )
         return result
+
+    def _extract_responses_text(self, completion: object) -> str | None:
+        output_text = getattr(completion, "output_text", None)
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+
+        model_dump = getattr(completion, "model_dump", None)
+        if not callable(model_dump):
+            return None
+
+        payload = model_dump()
+        if not isinstance(payload, dict):
+            return None
+
+        output_items = payload.get("output")
+        if not isinstance(output_items, list):
+            return None
+
+        text_parts: list[str] = []
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            content_items = item.get("content")
+            if not isinstance(content_items, list):
+                continue
+            for content_item in content_items:
+                if not isinstance(content_item, dict):
+                    continue
+                text_value = content_item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    text_parts.append(text_value)
+
+        if not text_parts:
+            return None
+        return "\n".join(text_parts)
 
 
 class AzureOpenAICountryResolver:
@@ -515,11 +636,21 @@ class AzureOpenAICountryResolver:
         api_version: str,
     ) -> None:
         self._deployment = deployment
-        self._client = AzureOpenAI(
-            azure_endpoint=endpoint,
-            api_key=api_key,
-            api_version=api_version,
-        )
+        self._uses_responses_api = endpoint.rstrip("/").endswith("/openai/v1/responses")
+        if self._uses_responses_api:
+            responses_base_url = endpoint.rstrip("/")
+            if responses_base_url.endswith("/responses"):
+                responses_base_url = responses_base_url[: -len("/responses")]
+            self._client = OpenAI(
+                base_url=responses_base_url,
+                api_key=api_key,
+            )
+        else:
+            self._client = AzureOpenAI(
+                azure_endpoint=endpoint,
+                api_key=api_key,
+                api_version=api_version,
+            )
 
     @retry(
         stop=stop_after_attempt(2),
@@ -535,18 +666,41 @@ class AzureOpenAICountryResolver:
             f"Location text:\n{raw_text}"
         )
 
-        completion = self._client.chat.completions.create(
-            model=self._deployment,
-            temperature=0,
-            max_tokens=120,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": "You normalize location text to country."},
-                {"role": "user", "content": prompt},
-            ],
-        )
+        content: str | None = None
+        if self._uses_responses_api:
+            input_payload: list[dict[str, object]] = [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "You normalize location text to country.",
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                },
+            ]
+            completion_response = self._client.responses.create(
+                model=self._deployment,
+                input=cast(Any, input_payload),
+            )
+            content = self._extract_responses_text(completion_response)
+        else:
+            chat_completion = self._client.chat.completions.create(
+                model=self._deployment,
+                temperature=0,
+                max_tokens=120,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": "You normalize location text to country."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            content = chat_completion.choices[0].message.content
 
-        content = completion.choices[0].message.content
         if content is None:
             raise VisionExtractorError("Country resolver returned no content")
 
@@ -560,6 +714,41 @@ class AzureOpenAICountryResolver:
             confidence = 0.0
 
         return country, float(max(0.0, min(1.0, confidence)))
+
+    def _extract_responses_text(self, completion: object) -> str | None:
+        output_text = getattr(completion, "output_text", None)
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+
+        model_dump = getattr(completion, "model_dump", None)
+        if not callable(model_dump):
+            return None
+
+        payload = model_dump()
+        if not isinstance(payload, dict):
+            return None
+
+        output_items = payload.get("output")
+        if not isinstance(output_items, list):
+            return None
+
+        text_parts: list[str] = []
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            content_items = item.get("content")
+            if not isinstance(content_items, list):
+                continue
+            for content_item in content_items:
+                if not isinstance(content_item, dict):
+                    continue
+                text_value = content_item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    text_parts.append(text_value)
+
+        if not text_parts:
+            return None
+        return "\n".join(text_parts)
 
 
 def _parse_model_output(model_output: str) -> dict[str, object]:

@@ -1,5 +1,13 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Download, Loader2, Trash2, X } from "lucide-react";
 import { LabelReviewResponse, reviewLabelImage } from "./api/client";
+import { ThemeProvider } from "./contexts/ThemeContext";
+import { ThemeToggle } from "./components/ThemeToggle";
+import { Button } from "./components/Button";
+import { Badge } from "./components/Badge";
+import { Alert } from "./components/Alert";
+import { StatsCard } from "./components/StatsCard";
+import { prepareExportItems, resultsToCSV, downloadCSV } from "./utils/csvExport";
 
 type ExpectedFields = {
   expected_brand_name: string;
@@ -26,7 +34,7 @@ const defaultExpectedFields: ExpectedFields = {
   expected_origin_country: "",
 };
 
-function App() {
+function AppContent() {
   const [expectedFields, setExpectedFields] = useState<ExpectedFields>(defaultExpectedFields);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [error, setError] = useState<string>("");
@@ -146,14 +154,25 @@ function App() {
       return <></>;
     }
 
-    return (
-      <article key={item.id} className="queue-card result-card">
-        <header className="queue-card-header">
-          <h3>{item.file.name}</h3>
-          <span className={`status status-${item.status}`}>{item.status}</span>
-        </header>
+    const hasQualityWarning = item.result.compliance.issues.some((issue) =>
+      issue.toLowerCase().startsWith(QUALITY_WARNING_MESSAGE_PREFIX.toLowerCase())
+    );
 
-        <p className="meta">{(item.file.size / 1024).toFixed(1)} KB</p>
+    return (
+      <article key={item.id} className="result-card">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-gray-50 truncate">
+              {item.file.name}
+            </h3>
+            <p className="meta">{(item.file.size / 1024).toFixed(1)} KB</p>
+          </div>
+          <div className="flex gap-2">
+            <Badge variant={hasQualityWarning ? "warning" : "success"}>
+              {item.result.compliance.is_compliant ? "Compliant" : "Non-Compliant"}
+            </Badge>
+          </div>
+        </div>
 
         <div className="result-layout">
           <figure className="result-image-wrapper">
@@ -161,48 +180,102 @@ function App() {
           </figure>
 
           <div className="review-result">
-            <p>
-              <strong>Compliant:</strong> {item.result.compliance.is_compliant ? "Yes" : "No"}
-            </p>
-            <p>
-              <strong>Brand:</strong> {item.result.extraction.brand_name}
-            </p>
-            <p>
-              <strong>Class/Type:</strong> {item.result.extraction.class_type ?? "Not detected"}
-            </p>
-            <p>
-              <strong>Alcohol %:</strong> {item.result.extraction.alcohol_percentage ?? "Not detected"}
-            </p>
-            <p>
-              <strong>Net Contents:</strong> {item.result.extraction.net_contents ?? "Not detected"}
-            </p>
-            <p>
-              <strong>Origin Country:</strong> {item.result.extraction.origin_country ?? "Not detected"}
-            </p>
-            <p>
-              <strong>Gov Warning Found:</strong> {item.result.extraction.has_government_warning ? "Yes" : "No"}
-            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                  Brand
+                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-50">
+                  {item.result.extraction.brand_name || "Not detected"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                  Class/Type
+                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-50">
+                  {item.result.extraction.class_type || "Not detected"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                  Alcohol %
+                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-50">
+                  {item.result.extraction.alcohol_percentage || "Not detected"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                  Net Contents
+                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-50">
+                  {item.result.extraction.net_contents || "Not detected"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                  Origin
+                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-50">
+                  {item.result.extraction.origin_country || "Not detected"}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase">
+                  Gov Warning
+                </p>
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-50">
+                  {item.result.extraction.has_government_warning ? "Yes" : "No"}
+                </p>
+              </div>
+            </div>
 
-            {item.result.compliance.issues.length > 0 ? (
-              <ul>
-                {item.result.compliance.issues.map((issue) => (
-                  <li key={issue}>{issue}</li>
-                ))}
-              </ul>
-            ) : (
-              <p>No compliance issues.</p>
+            {item.result.extraction.ai_assisted_fields.length > 0 && (
+              <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-2">
+                  AI Assisted Fields
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {item.result.extraction.ai_assisted_fields.map((field) => (
+                    <Badge key={field} variant="info">
+                      {field}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {item.result.compliance.issues.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-2">
+                  Compliance Issues
+                </p>
+                <ul>
+                  {item.result.compliance.issues.map((issue) => (
+                    <li key={issue}>{issue}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {item.result.compliance.issues.length === 0 && (
+              <div className="rounded-lg bg-green-50 p-3 text-sm text-green-700 dark:bg-green-900/20 dark:text-green-200">
+                ✓ No compliance issues.
+              </div>
             )}
           </div>
         </div>
 
-        <button
-          type="button"
-          className="secondary"
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={() => removeQueueItem(item.id)}
           disabled={isProcessing}
         >
+          <Trash2 className="w-4 h-4" />
           Remove
-        </button>
+        </Button>
       </article>
     );
   }
@@ -265,179 +338,292 @@ function App() {
   return (
     <main className="page">
       <section className="panel">
-        <h1>Label Review Queue</h1>
-        <p className="subtitle">
-          Upload one or many images, then run OCR-based compliance review for each label.
-        </p>
+        <div className="header mb-6">
+          <div className="header-content">
+            <h1>🍷 Label Review Queue</h1>
+            <p className="subtitle mt-2">
+              Upload alcohol labels for OCR-based compliance verification and extraction
+            </p>
+          </div>
+          <ThemeToggle />
+        </div>
 
         <form onSubmit={onSubmit} className="form">
-          <label className="uploader">
-            Add label images
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={onFileChange}
-              disabled={isProcessing}
-            />
-          </label>
+          {/* File Upload */}
+          <div>
+            <label htmlFor="file-input" className="uploader">
+              <div className="uploader-text">📸 Click to upload or drag and drop</div>
+              <div className="uploader-hint">PNG, JPG, GIF up to 10MB</div>
+              <input
+                id="file-input"
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={onFileChange}
+                disabled={isProcessing}
+              />
+            </label>
+          </div>
 
-          <label>
-            Expected brand name (optional)
-            <input
-              value={expectedFields.expected_brand_name}
-              onChange={(event) =>
-                setExpectedFields((prev) => ({
-                  ...prev,
-                  expected_brand_name: event.target.value,
-                }))
-              }
-            />
-          </label>
+          {/* Expected Fields */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="form-group">
+              <label htmlFor="brand">Expected Brand Name (optional)</label>
+              <input
+                id="brand"
+                type="text"
+                placeholder="e.g., Château Margaux"
+                value={expectedFields.expected_brand_name}
+                onChange={(event) =>
+                  setExpectedFields((prev) => ({
+                    ...prev,
+                    expected_brand_name: event.target.value,
+                  }))
+                }
+                disabled={isProcessing}
+              />
+            </div>
 
-          <label>
-            Expected alcohol % (optional)
-            <input
-              type="number"
-              min={0}
-              max={100}
-              step="0.1"
-              value={expectedFields.expected_alcohol_percentage}
-              onChange={(event) =>
-                setExpectedFields((prev) => ({
-                  ...prev,
-                  expected_alcohol_percentage: event.target.value,
-                }))
-              }
-            />
-          </label>
+            <div className="form-group">
+              <label htmlFor="alcohol">Expected Alcohol % (optional)</label>
+              <input
+                id="alcohol"
+                type="number"
+                placeholder="e.g., 13.5"
+                min={0}
+                max={100}
+                step="0.1"
+                value={expectedFields.expected_alcohol_percentage}
+                onChange={(event) =>
+                  setExpectedFields((prev) => ({
+                    ...prev,
+                    expected_alcohol_percentage: event.target.value,
+                  }))
+                }
+                disabled={isProcessing}
+              />
+            </div>
 
-          <label>
-            Expected origin country (optional)
-            <input
-              value={expectedFields.expected_origin_country}
-              onChange={(event) =>
-                setExpectedFields((prev) => ({
-                  ...prev,
-                  expected_origin_country: event.target.value,
-                }))
-              }
-            />
-          </label>
+            <div className="form-group">
+              <label htmlFor="origin">Expected Origin Country (optional)</label>
+              <input
+                id="origin"
+                type="text"
+                placeholder="e.g., France"
+                value={expectedFields.expected_origin_country}
+                onChange={(event) =>
+                  setExpectedFields((prev) => ({
+                    ...prev,
+                    expected_origin_country: event.target.value,
+                  }))
+                }
+                disabled={isProcessing}
+              />
+            </div>
+          </div>
 
-          <div className="actions">
-            <button type="submit" disabled={isProcessing || queue.length === 0}>
-              {isProcessing ? "Reviewing queue..." : "Run Review Queue"}
-            </button>
-            <button
+          {/* Action Buttons */}
+          <div className="actions pt-2">
+            <Button
+              type="submit"
+              disabled={isProcessing || queue.length === 0}
+            >
+              {isProcessing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Reviewing...
+                </>
+              ) : (
+                "Run Review Queue"
+              )}
+            </Button>
+
+            <Button
               type="button"
-              className="secondary"
+              variant="secondary"
               onClick={clearQueue}
               disabled={isProcessing}
             >
+              <Trash2 className="w-4 h-4" />
               Clear Queue
-            </button>
+            </Button>
+
+            {completedItems.length > 0 && (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  const exportItems = prepareExportItems(queue);
+                  const csv = resultsToCSV(exportItems);
+                  downloadCSV(csv, `label-verification-${new Date().toISOString().split("T")[0]}.csv`);
+                }}
+              >
+                <Download className="w-4 h-4" />
+                Export Results to CSV
+              </Button>
+            )}
           </div>
         </form>
 
-        <section className="summary">
-          <h2>Queue Summary</h2>
-          <p>
-            {queueSummary.total} total, {queueSummary.complete} complete, {queueSummary.failed} failed,
-            {" "}
-            {queueSummary.pending} pending.
-          </p>
-        </section>
+        {/* Error Alert */}
+        {error && (
+          <Alert
+            type="error"
+            message={error}
+            onDismiss={() => setError("")}
+          />
+        )}
 
-        {error ? <p className="error">{error}</p> : null}
+        {/* Queue Summary */}
+        {queue.length > 0 && (
+          <div className="summary">
+            <StatsCard label="Total" value={queueSummary.total} color="blue" />
+            <StatsCard label="Completed" value={queueSummary.complete} color="green" />
+            <StatsCard label="Failed" value={queueSummary.failed} color="red" />
+            <StatsCard label="Pending" value={queueSummary.pending} color="yellow" />
+          </div>
+        )}
 
-        {activeItems.length > 0 ? (
-          <section>
-            <h2>Active Queue</h2>
+        {/* Active Queue */}
+        {activeItems.length > 0 && (
+          <section className="queue-section">
+            <h2 className="queue-section-title">
+              ⏳ Active Queue ({activeItems.length})
+            </h2>
             <div className="queue-grid">
               {activeItems.map((item) => (
                 <article key={item.id} className="queue-card">
-                  <header className="queue-card-header">
-                    <h3>{item.file.name}</h3>
-                    <span className={`status status-${item.status}`}>{item.status}</span>
-                  </header>
-
-                  <p className="meta">{(item.file.size / 1024).toFixed(1)} KB</p>
-
-                  <div className="result-image-wrapper queue-preview">
-                    <img src={item.previewUrl} alt={item.file.name} className="result-image" />
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <h3 className="queue-card-filename">{item.file.name}</h3>
+                      <p className="meta">{(item.file.size / 1024).toFixed(1)} KB</p>
+                    </div>
+                    <Badge
+                      variant={item.status === "processing" ? "warning" : "info"}
+                    >
+                      {item.status === "processing" && (
+                        <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                      )}
+                      {item.status}
+                    </Badge>
                   </div>
 
-                  <p className="meta">No result yet.</p>
+                  <div className="result-image-wrapper h-24">
+                    <img
+                      src={item.previewUrl}
+                      alt={item.file.name}
+                      className="result-image"
+                    />
+                  </div>
 
-                  <button
+                  <Button
                     type="button"
-                    className="secondary"
+                    variant="secondary"
+                    size="sm"
                     onClick={() => removeQueueItem(item.id)}
                     disabled={isProcessing}
                   >
-                    Remove
-                  </button>
+                    <X className="w-4 h-4" />
+                  </Button>
                 </article>
               ))}
             </div>
           </section>
-        ) : null}
+        )}
 
-        {failedItems.length > 0 ? (
-          <section>
-            <h2>Failed Items</h2>
+        {/* Failed Items */}
+        {failedItems.length > 0 && (
+          <section className="queue-section">
+            <h2 className="queue-section-title">
+              ❌ Failed Items ({failedItems.length})
+            </h2>
             <div className="queue-grid">
               {failedItems.map((item) => (
-                <article key={item.id} className="queue-card">
-                  <header className="queue-card-header">
-                    <h3>{item.file.name}</h3>
-                    <span className={`status status-${item.status}`}>{item.status}</span>
-                  </header>
-
-                  <p className="meta">{(item.file.size / 1024).toFixed(1)} KB</p>
-                  <div className="result-image-wrapper queue-preview">
-                    <img src={item.previewUrl} alt={item.file.name} className="result-image" />
+                <article key={item.id} className="queue-card border-red-200 dark:border-red-900">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <h3 className="queue-card-filename">{item.file.name}</h3>
+                      <p className="meta">{(item.file.size / 1024).toFixed(1)} KB</p>
+                    </div>
+                    <Badge variant="danger">Failed</Badge>
                   </div>
-                  {item.error ? <p className="error">{item.error}</p> : null}
 
-                  <button
+                  {item.error && (
+                    <Alert
+                      type="error"
+                      message={item.error}
+                    />
+                  )}
+
+                  <div className="result-image-wrapper h-24">
+                    <img
+                      src={item.previewUrl}
+                      alt={item.file.name}
+                      className="result-image"
+                    />
+                  </div>
+
+                  <Button
                     type="button"
-                    className="secondary"
+                    variant="secondary"
+                    size="sm"
                     onClick={() => removeQueueItem(item.id)}
                     disabled={isProcessing}
                   >
+                    <Trash2 className="w-4 h-4" />
                     Remove
-                  </button>
+                  </Button>
                 </article>
               ))}
             </div>
           </section>
-        ) : null}
+        )}
 
-        <section>
-          <h2>Completed: No Quality Warning ({completedWithoutQualityWarning.length})</h2>
-          <div className="queue-grid">
-            {completedWithoutQualityWarning.length > 0 ? (
-              completedWithoutQualityWarning.map(renderResultCard)
-            ) : (
-              <p className="meta">No completed results without quality warnings yet.</p>
-            )}
-          </div>
-        </section>
+        {/* Completed Results - No Warning */}
+        {completedWithoutQualityWarning.length > 0 && (
+          <section className="queue-section">
+            <h2 className="queue-section-title">
+              ✅ Verified Labels ({completedWithoutQualityWarning.length})
+            </h2>
+            <div className="space-y-4">
+              {completedWithoutQualityWarning.map(renderResultCard)}
+            </div>
+          </section>
+        )}
 
-        <section>
-          <h2>Completed: With Quality Warning ({completedWithQualityWarning.length})</h2>
-          <div className="queue-grid">
-            {completedWithQualityWarning.length > 0 ? (
-              completedWithQualityWarning.map(renderResultCard)
-            ) : (
-              <p className="meta">No completed results with quality warnings yet.</p>
-            )}
+        {/* Completed Results - With Warning */}
+        {completedWithQualityWarning.length > 0 && (
+          <section className="queue-section">
+            <h2 className="queue-section-title">
+              ⚠️ Quality Concerns ({completedWithQualityWarning.length})
+            </h2>
+            <p className="subtitle mb-4">
+              These labels were processed but may have quality issues. Please review carefully.
+            </p>
+            <div className="space-y-4">
+              {completedWithQualityWarning.map(renderResultCard)}
+            </div>
+          </section>
+        )}
+
+        {/* Empty State */}
+        {queue.length === 0 && !error && (
+          <div className="mt-12 text-center">
+            <p className="text-lg text-gray-500 dark:text-gray-400">
+              👆 Start by uploading some label images
+            </p>
           </div>
-        </section>
+        )}
       </section>
     </main>
+  );
+}
+
+function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
   );
 }
 

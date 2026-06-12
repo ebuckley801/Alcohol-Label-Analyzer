@@ -4,6 +4,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -81,6 +82,27 @@ def _write_local_ocr_dump(
         logger.exception("local_ocr_dump_write_failed")
 
 
+def _normalize_azure_openai_endpoint(raw_endpoint: str) -> str:
+    trimmed = raw_endpoint.strip().rstrip("/")
+    if not trimmed:
+        return ""
+
+    if trimmed.endswith("/openai/v1/responses"):
+        return trimmed
+
+    parsed = urlparse(trimmed)
+    if not parsed.scheme or not parsed.netloc:
+        return trimmed
+
+    normalized = f"{parsed.scheme}://{parsed.netloc}"
+    if normalized != trimmed:
+        logger.warning(
+            "azure_openai_endpoint_normalized",
+            extra={"original_endpoint": trimmed, "normalized_endpoint": normalized},
+        )
+    return normalized
+
+
 def _build_vision_service() -> VisionExtractor:
     provider = os.getenv("VISION_PROVIDER", "azure_ai_vision").strip().lower()
     if provider == "azure_ai_vision":
@@ -91,7 +113,9 @@ def _build_vision_service() -> VisionExtractor:
 
         country_resolver: AzureOpenAICountryResolver | None = None
         if os.getenv("ENABLE_COUNTRY_AI_FALLBACK", "false").lower() == "true":
-            openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+            openai_endpoint = _normalize_azure_openai_endpoint(
+                os.getenv("AZURE_OPENAI_ENDPOINT", "")
+            )
             openai_key = os.getenv("AZURE_OPENAI_API_KEY", "")
             openai_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
             openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
@@ -115,7 +139,7 @@ def _build_vision_service() -> VisionExtractor:
         if not openai_core_fallback_enabled:
             return primary_service
 
-        openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+        openai_endpoint = _normalize_azure_openai_endpoint(os.getenv("AZURE_OPENAI_ENDPOINT", ""))
         openai_key = os.getenv("AZURE_OPENAI_API_KEY", "")
         openai_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
         openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")
@@ -148,7 +172,7 @@ def _build_vision_service() -> VisionExtractor:
         )
 
     if provider == "azure_openai":
-        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+        endpoint = _normalize_azure_openai_endpoint(os.getenv("AZURE_OPENAI_ENDPOINT", ""))
         api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
         deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
         api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-10-21")

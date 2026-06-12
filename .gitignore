@@ -28,3 +28,4 @@ frontend/.env
 
 # Local OCR debug output
 backend/local_debug/
+.vercel

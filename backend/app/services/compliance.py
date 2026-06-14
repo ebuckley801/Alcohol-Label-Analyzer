@@ -2,13 +2,6 @@ import re
 
 from app.schemas import ExtractedLabelFields, LabelComplianceResult
 
-REQUIRED_GOV_WARNING = (
-    "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK "
-    "ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. "
-    "(2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE "
-    "MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
-)
-
 
 class ComplianceService:
     def evaluate(
@@ -46,14 +39,14 @@ class ComplianceService:
         if not extracted.has_government_warning:
             issues.append("Government warning statement is missing.")
         else:
-            warning_is_all_uppercase = extracted.government_warning_is_all_uppercase
-            if warning_is_all_uppercase is None:
-                warning_is_all_uppercase = self._warning_is_all_uppercase(
+            warning_header_is_uppercase = extracted.government_warning_is_all_uppercase
+            if warning_header_is_uppercase is None:
+                warning_header_is_uppercase = self._warning_header_is_uppercase(
                     extracted.government_warning_text
                 )
 
-            if warning_is_all_uppercase is False:
-                issues.append("Government warning statement must be all uppercase.")
+            if warning_header_is_uppercase is False:
+                issues.append("Government warning header must be uppercase: 'GOVERNMENT WARNING'.")
 
             if (
                 extracted.government_warning_font_size_ratio is not None
@@ -65,9 +58,6 @@ class ComplianceService:
                     f"({ratio_percent:.1f}% of average font size; minimum is 30.0%)."
                 )
 
-            if not self._warning_is_exact(extracted.government_warning_text):
-                issues.append("Government warning statement is not exact required wording.")
-
         return LabelComplianceResult(is_compliant=not issues, issues=issues)
 
     def _is_same_brand(self, extracted_brand: str, expected_brand: str) -> bool:
@@ -75,14 +65,10 @@ class ComplianceService:
         normalized_expected = re.sub(r"[^a-z0-9]", "", expected_brand.lower())
         return normalized_extracted == normalized_expected
 
-    def _warning_is_exact(self, warning_text: str | None) -> bool:
+    def _warning_header_is_uppercase(self, warning_text: str | None) -> bool:
         if warning_text is None:
             return False
-
-        def collapse_space(value: str) -> str:
-            return re.sub(r"\s+", " ", value).strip()
-
-        return collapse_space(warning_text) == collapse_space(REQUIRED_GOV_WARNING)
+        return "GOVERNMENT WARNING" in warning_text
 
     def _has_low_quality_ocr_signal(self, extracted: ExtractedLabelFields) -> bool:
         raw_text = extracted.raw_text
@@ -114,12 +100,3 @@ class ComplianceService:
 
         return has_fragmented_text or has_numeric_noise or has_compact_mixed_noise
 
-    def _warning_is_all_uppercase(self, warning_text: str | None) -> bool:
-        if warning_text is None:
-            return False
-
-        letters = [char for char in warning_text if char.isalpha()]
-        if not letters:
-            return False
-
-        return all(char.isupper() for char in letters)

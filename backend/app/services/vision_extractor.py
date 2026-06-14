@@ -1350,7 +1350,7 @@ class AzureVisionReadExtractorService:
 
         warning_lines = lines[warning_start_index:]
         warning_text = "\n".join(line.text for line in warning_lines).strip()
-        warning_is_all_uppercase = self._is_all_uppercase_text(warning_text)
+        warning_is_all_uppercase = self._is_warning_header_uppercase(warning_text)
 
         average_line_height = sum(line.box_height for line in lines) / len(lines)
         warning_average_height = sum(line.box_height for line in warning_lines) / len(warning_lines)
@@ -1360,8 +1360,7 @@ class AzureVisionReadExtractorService:
 
         return True, warning_text, warning_is_all_uppercase, warning_font_size_ratio
 
-    def _is_all_uppercase_text(self, value: str) -> bool:
-        letters = [char for char in value if char.isalpha()]
-        if not letters:
+    def _is_warning_header_uppercase(self, value: str) -> bool:
+        if not re.search(r"government\s+warning", value, flags=re.IGNORECASE):
             return False
-        return all(char.isupper() for char in letters)
+        return "GOVERNMENT WARNING" in value

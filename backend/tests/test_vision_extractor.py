@@ -132,7 +132,7 @@ def test_azure_vision_extractor_maps_ocr_lines() -> None:
     assert result.has_government_warning is True
     assert result.government_warning_text is not None
     assert result.government_warning_text.startswith("GOVERNMENT WARNING")
-    assert result.government_warning_is_all_uppercase is False
+    assert result.government_warning_is_all_uppercase is True
     assert result.government_warning_font_size_ratio is not None
     assert result.government_warning_font_size_ratio > 0.3
 

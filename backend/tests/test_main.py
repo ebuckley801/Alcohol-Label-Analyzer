@@ -144,7 +144,7 @@ def test_review_endpoint_flags_non_exact_warning_text(monkeypatch) -> None:
     body = response.json()
     assert body["compliance"]["is_compliant"] is False
     assert (
-        "Government warning statement must be all uppercase."
+        "Government warning header must be uppercase: 'GOVERNMENT WARNING'."
         in body["compliance"]["issues"]
     )
 

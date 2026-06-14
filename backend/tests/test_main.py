@@ -67,11 +67,13 @@ def test_review_endpoint_success(monkeypatch) -> None:
                 origin_country="United States",
                 has_government_warning=True,
                 government_warning_text=(
-                    "GOVERNMENT WARNING: (1) According to the Surgeon General, women should "
-                    "not drink alcoholic beverages during pregnancy because of the risk of "
-                    "birth defects. (2) Consumption of alcoholic beverages impairs your "
-                    "ability to drive a car or operate machinery, and may cause health problems."
+                    "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD "
+                    "NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF "
+                    "BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR "
+                    "ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
                 ),
+                government_warning_is_all_uppercase=True,
+                government_warning_font_size_ratio=0.5,
                 raw_text="sample",
             )
 
@@ -127,6 +129,7 @@ def test_review_endpoint_flags_non_exact_warning_text(monkeypatch) -> None:
                     "birth defects. (2) Consumption of alcoholic beverages impairs your "
                     "ability to drive a car or operate machinery, and may cause health problems."
                 ),
+                government_warning_is_all_uppercase=False,
                 raw_text="sample",
             )
 
@@ -141,8 +144,47 @@ def test_review_endpoint_flags_non_exact_warning_text(monkeypatch) -> None:
     body = response.json()
     assert body["compliance"]["is_compliant"] is False
     assert (
-        "Government warning statement is not exact required wording."
+        "Government warning statement must be all uppercase."
         in body["compliance"]["issues"]
+    )
+
+
+def test_review_endpoint_flags_small_government_warning_text(monkeypatch) -> None:
+    class DummyVisionService:
+        def extract_from_image(self, image_bytes: bytes, content_type: str) -> ExtractedLabelFields:
+            assert image_bytes
+            assert content_type == "image/png"
+            return ExtractedLabelFields(
+                brand_name="OLD TOM DISTILLERY",
+                class_type="Kentucky Straight Bourbon Whiskey",
+                alcohol_percentage=45.0,
+                net_contents="750 mL",
+                origin_country="United States",
+                has_government_warning=True,
+                government_warning_text=(
+                    "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD "
+                    "NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF "
+                    "BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR "
+                    "ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
+                ),
+                government_warning_is_all_uppercase=True,
+                government_warning_font_size_ratio=0.25,
+                raw_text="sample",
+            )
+
+    monkeypatch.setattr("app.main._build_vision_service", lambda: DummyVisionService())
+
+    response = client.post(
+        "/api/v1/review",
+        files={"image": ("label.png", b"fake-image", "image/png")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["compliance"]["is_compliant"] is False
+    assert any(
+        issue.startswith("Government warning text is too small relative to label text")
+        for issue in body["compliance"]["issues"]
     )
 
 

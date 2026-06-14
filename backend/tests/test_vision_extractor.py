@@ -132,6 +132,58 @@ def test_azure_vision_extractor_maps_ocr_lines() -> None:
     assert result.has_government_warning is True
     assert result.government_warning_text is not None
     assert result.government_warning_text.startswith("GOVERNMENT WARNING")
+    assert result.government_warning_is_all_uppercase is False
+    assert result.government_warning_font_size_ratio is not None
+    assert result.government_warning_font_size_ratio > 0.3
+
+
+def test_azure_vision_extractor_marks_warning_too_small_by_font_ratio() -> None:
+    service = AzureVisionReadExtractorService(
+        endpoint="https://example.cognitiveservices.azure.com",
+        api_key="dummy-key",
+    )
+    service._client = cast(
+        ImageAnalysisClient,
+        _FakeClient(
+            [
+                _FakeLine("OLD TOM DISTILLERY", width=360, height=64, top=22),
+                _FakeLine("KENTUCKY STRAIGHT BOURBON WHISKEY", width=340, height=42, top=86),
+                _FakeLine("45% ALC./VOL. (90 PROOF)", width=240, height=30, top=132),
+                _FakeLine("750 ML", width=120, height=26, top=168),
+                _FakeLine(
+                    "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD",
+                    width=430,
+                    height=6,
+                    top=210,
+                ),
+                _FakeLine(
+                    "NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF",
+                    width=420,
+                    height=6,
+                    top=222,
+                ),
+                _FakeLine(
+                    "BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR",
+                    width=418,
+                    height=6,
+                    top=234,
+                ),
+                _FakeLine(
+                    "ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS.",
+                    width=410,
+                    height=6,
+                    top=246,
+                ),
+            ]
+        ),
+    )
+
+    result = service.extract_from_image(b"fake-image", "image/png")
+
+    assert result.has_government_warning is True
+    assert result.government_warning_is_all_uppercase is True
+    assert result.government_warning_font_size_ratio is not None
+    assert result.government_warning_font_size_ratio < 0.3
 
 
 def test_azure_vision_extractor_extracts_net_contents_in_centiliters() -> None:

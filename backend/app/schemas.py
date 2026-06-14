@@ -23,6 +23,8 @@ class ExtractedLabelFields(BaseModel):
     origin_country: str | None = None
     has_government_warning: bool
     government_warning_text: str | None = None
+    government_warning_is_all_uppercase: bool | None = None
+    government_warning_font_size_ratio: float | None = Field(default=None, ge=0.0)
     raw_text: str | None = None
     ai_assisted_fields: list[str] = Field(default_factory=list)
 

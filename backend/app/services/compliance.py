@@ -3,10 +3,10 @@ import re
 from app.schemas import ExtractedLabelFields, LabelComplianceResult
 
 REQUIRED_GOV_WARNING = (
-    "GOVERNMENT WARNING: (1) According to the Surgeon General, women should not drink "
-    "alcoholic beverages during pregnancy because of the risk of birth defects. "
-    "(2) Consumption of alcoholic beverages impairs your ability to drive a car or operate "
-    "machinery, and may cause health problems."
+    "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK "
+    "ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. "
+    "(2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE "
+    "MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
 )
 
 
@@ -45,8 +45,28 @@ class ComplianceService:
 
         if not extracted.has_government_warning:
             issues.append("Government warning statement is missing.")
-        elif not self._warning_is_exact(extracted.government_warning_text):
-            issues.append("Government warning statement is not exact required wording.")
+        else:
+            warning_is_all_uppercase = extracted.government_warning_is_all_uppercase
+            if warning_is_all_uppercase is None:
+                warning_is_all_uppercase = self._warning_is_all_uppercase(
+                    extracted.government_warning_text
+                )
+
+            if warning_is_all_uppercase is False:
+                issues.append("Government warning statement must be all uppercase.")
+
+            if (
+                extracted.government_warning_font_size_ratio is not None
+                and extracted.government_warning_font_size_ratio < 0.3
+            ):
+                ratio_percent = extracted.government_warning_font_size_ratio * 100
+                issues.append(
+                    "Government warning text is too small relative to label text "
+                    f"({ratio_percent:.1f}% of average font size; minimum is 30.0%)."
+                )
+
+            if not self._warning_is_exact(extracted.government_warning_text):
+                issues.append("Government warning statement is not exact required wording.")
 
         return LabelComplianceResult(is_compliant=not issues, issues=issues)
 
@@ -93,3 +113,13 @@ class ComplianceService:
         has_compact_mixed_noise = mixed_noise_count >= 2
 
         return has_fragmented_text or has_numeric_noise or has_compact_mixed_noise
+
+    def _warning_is_all_uppercase(self, warning_text: str | None) -> bool:
+        if warning_text is None:
+            return False
+
+        letters = [char for char in warning_text if char.isalpha()]
+        if not letters:
+            return False
+
+        return all(char.isupper() for char in letters)

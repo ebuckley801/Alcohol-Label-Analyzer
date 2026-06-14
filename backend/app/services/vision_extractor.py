@@ -836,6 +836,12 @@ class AzureVisionReadExtractorService:
         text_lines = [line.text for line in extraction_lines]
         all_text_lines = [line.text for line in lines]
         raw_text = "\n".join(all_text_lines)
+        (
+            has_government_warning,
+            government_warning_text,
+            government_warning_is_all_uppercase,
+            government_warning_font_size_ratio,
+        ) = self._extract_government_warning_metadata(lines)
         class_type = self._extract_class_type(text_lines)
         brand_name, used_size_fallback = self._extract_brand_name(
             extraction_lines,
@@ -848,8 +854,10 @@ class AzureVisionReadExtractorService:
             alcohol_percentage=self._extract_alcohol_percentage(raw_text),
             net_contents=self._extract_net_contents(raw_text),
             origin_country=self._extract_origin_country(raw_text),
-            has_government_warning="GOVERNMENT WARNING" in raw_text.upper(),
-            government_warning_text=self._extract_government_warning_text(raw_text),
+            has_government_warning=has_government_warning,
+            government_warning_text=government_warning_text,
+            government_warning_is_all_uppercase=government_warning_is_all_uppercase,
+            government_warning_font_size_ratio=government_warning_font_size_ratio,
             raw_text=raw_text,
         )
         logger.info(
@@ -1309,10 +1317,51 @@ class AzureVisionReadExtractorService:
         return best_country, best_confidence
 
     def _extract_government_warning_text(self, raw_text: str) -> str | None:
-        upper_text = raw_text.upper()
-        start = upper_text.find("GOVERNMENT WARNING")
-        if start < 0:
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        start_index = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if "government warning" in line.lower()
+            ),
+            -1,
+        )
+        if start_index < 0:
             return None
+        return "\n".join(lines[start_index:]).strip()
 
-        warning_section = raw_text[start:]
-        return warning_section.strip()
+    def _extract_government_warning_metadata(
+        self,
+        lines: list[OcrLineCandidate],
+    ) -> tuple[bool, str | None, bool | None, float | None]:
+        if not lines:
+            return False, None, None, None
+
+        warning_start_index = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if "government warning" in line.text.lower()
+            ),
+            -1,
+        )
+        if warning_start_index < 0:
+            return False, None, None, None
+
+        warning_lines = lines[warning_start_index:]
+        warning_text = "\n".join(line.text for line in warning_lines).strip()
+        warning_is_all_uppercase = self._is_all_uppercase_text(warning_text)
+
+        average_line_height = sum(line.box_height for line in lines) / len(lines)
+        warning_average_height = sum(line.box_height for line in warning_lines) / len(warning_lines)
+        warning_font_size_ratio = None
+        if average_line_height > 0:
+            warning_font_size_ratio = warning_average_height / average_line_height
+
+        return True, warning_text, warning_is_all_uppercase, warning_font_size_ratio
+
+    def _is_all_uppercase_text(self, value: str) -> bool:
+        letters = [char for char in value if char.isalpha()]
+        if not letters:
+            return False
+        return all(char.isupper() for char in letters)

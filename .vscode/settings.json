@@ -13,6 +13,8 @@
         },
         "npm run lint": true,
         "npm run typecheck": true,
-        "npm run build": true
+        "npm run build": true,
+        "set": true,
+        "uvicorn": true
     }
 }

@@ -762,6 +762,13 @@ def _parse_model_output(model_output: str) -> dict[str, object]:
 
     if not isinstance(data, dict):
         raise VisionExtractorError("Model output was not an object")
+    # The model occasionally omits brand_name or returns null when a label is
+    # unreadable. brand_name is a required non-null field, so coerce it to an
+    # empty string here; the compliance engine then flags it as missing rather
+    # than the request failing with a 500.
+    brand_name = data.get("brand_name")
+    if not isinstance(brand_name, str):
+        data["brand_name"] = ""
     return data
 
 
@@ -1202,14 +1209,51 @@ class AzureVisionReadExtractorService:
         return score
 
     def _extract_alcohol_percentage(self, raw_text: str) -> float | None:
-        match = re.search(r"(\d{1,2}(?:\.\d+)?)\s*%", raw_text)
-        if match is None:
-            return None
+        # 1. Percentage explicitly anchored to an alcohol keyword (most reliable).
+        anchored = re.search(
+            r"(\d{1,2}(?:\.\d+)?)\s*%\s*(?:alc|abv|alcohol|by\s+vol)",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+        if anchored is not None:
+            return self._coerce_percentage(anchored.group(1))
 
+        anchored_prefix = re.search(
+            r"(?:alc(?:ohol)?\.?(?:\s*/?\s*vol\.?)?|abv)[^\d%]{0,15}(\d{1,2}(?:\.\d+)?)\s*%",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+        if anchored_prefix is not None:
+            return self._coerce_percentage(anchored_prefix.group(1))
+
+        # 2. Proof statement (e.g. "90 Proof" -> 45% ABV).
+        proof = re.search(r"(\d{1,3}(?:\.\d+)?)\s*proof", raw_text, flags=re.IGNORECASE)
+        if proof is not None:
+            proof_value = self._coerce_percentage(proof.group(1), maximum=200.0)
+            if proof_value is not None:
+                return round(proof_value / 2, 2)
+
+        # 3. Standalone percentage, guarded against non-ABV uses like "100% agave"
+        #    or "2% sulfites". The lookbehind prevents matching "00%" inside "100%".
+        for match in re.finditer(r"(?<![\d.])(\d{1,2}(?:\.\d+)?)\s*%", raw_text):
+            value = self._coerce_percentage(match.group(1))
+            if value is None or value <= 0:
+                continue
+            context = raw_text[max(0, match.start() - 14) : match.end() + 14].lower()
+            if any(term in context for term in ("agave", "juice", "sulfite", "organic")):
+                continue
+            return value
+
+        return None
+
+    def _coerce_percentage(self, value: str, maximum: float = 100.0) -> float | None:
         try:
-            return float(match.group(1))
+            parsed = float(value)
         except ValueError:
             return None
+        if parsed < 0 or parsed > maximum:
+            return None
+        return parsed
 
     def _extract_net_contents(self, raw_text: str) -> str | None:
         match = re.search(
@@ -1319,11 +1363,7 @@ class AzureVisionReadExtractorService:
     def _extract_government_warning_text(self, raw_text: str) -> str | None:
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
         start_index = next(
-            (
-                index
-                for index, line in enumerate(lines)
-                if "government warning" in line.lower()
-            ),
+            (index for index, line in enumerate(lines) if "government warning" in line.lower()),
             -1,
         )
         if start_index < 0:

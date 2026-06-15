@@ -15,37 +15,43 @@ class VerificationServiceError(RuntimeError):
 class LabelVerificationService:
     def __init__(self, fail_first_attempt: bool = False) -> None:
         self._fail_first_attempt = fail_first_attempt
-        self._attempt_count = 0
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=0.1, min=0.1, max=0.4),
-        retry=retry_if_exception_type(VerificationServiceError),
-        reraise=True,
-    )
     def verify_label(self, payload: LabelVerificationRequest) -> LabelVerificationResult:
-        self._attempt_count += 1
-        logger.info("label_verification_started", extra={"attempt": self._attempt_count})
+        # Per-call attempt counter kept local so concurrent requests cannot share
+        # or corrupt state (the previous instance-level counter leaked across calls).
+        attempt_state = {"count": 0}
 
-        # This hook enables testing and simulates transient infrastructure failures.
-        if self._fail_first_attempt and self._attempt_count == 1:
-            logger.warning("label_verification_transient_failure")
-            raise VerificationServiceError("Transient verification failure")
-
-        issues = self._validate_fields(payload)
-        confidence_score = self._score_confidence(payload, issues)
-
-        result = LabelVerificationResult(
-            is_valid=not issues,
-            confidence_score=confidence_score,
-            issues=issues,
-            normalized_brand_name=payload.brand_name.strip().title(),
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=0.1, min=0.1, max=0.4),
+            retry=retry_if_exception_type(VerificationServiceError),
+            reraise=True,
         )
-        logger.info(
-            "label_verification_completed",
-            extra={"is_valid": result.is_valid, "issue_count": len(result.issues)},
-        )
-        return result
+        def _run() -> LabelVerificationResult:
+            attempt_state["count"] += 1
+            logger.info("label_verification_started", extra={"attempt": attempt_state["count"]})
+
+            # This hook enables testing and simulates transient infrastructure failures.
+            if self._fail_first_attempt and attempt_state["count"] == 1:
+                logger.warning("label_verification_transient_failure")
+                raise VerificationServiceError("Transient verification failure")
+
+            issues = self._validate_fields(payload)
+            confidence_score = self._score_confidence(payload, issues)
+
+            result = LabelVerificationResult(
+                is_valid=not issues,
+                confidence_score=confidence_score,
+                issues=issues,
+                normalized_brand_name=payload.brand_name.strip().title(),
+            )
+            logger.info(
+                "label_verification_completed",
+                extra={"is_valid": result.is_valid, "issue_count": len(result.issues)},
+            )
+            return result
+
+        return _run()
 
     def _validate_fields(self, payload: LabelVerificationRequest) -> list[str]:
         rules: list[tuple[bool, str]] = [

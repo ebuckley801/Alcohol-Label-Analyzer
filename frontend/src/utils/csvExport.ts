@@ -89,6 +89,12 @@ interface QueueItemForExport {
     compliance: {
       is_compliant: boolean;
       issues: string[];
+      issues_detail: {
+        code: string;
+        message: string;
+        severity: "error" | "warning" | "info";
+        citation: string | null;
+      }[];
     };
     extraction: {
       brand_name: string;
@@ -121,6 +127,12 @@ export function prepareExportItems(
       originCountry: item.result?.extraction.origin_country,
       hasGovernmentWarning: item.result?.extraction.has_government_warning,
       aiAssistedFields: item.result?.extraction.ai_assisted_fields.join("; "),
-      complianceIssues: item.result?.compliance.issues.join("; "),
+      complianceIssues: item.result?.compliance.issues_detail
+        .map(
+          (issue) =>
+            `[${issue.severity.toUpperCase()}] ${issue.message}` +
+            (issue.citation ? ` (${issue.citation})` : "")
+        )
+        .join("; "),
     }));
 }

@@ -24,9 +24,19 @@ export type LabelReviewExtraction = {
   ai_assisted_fields: string[];
 };
 
+export type IssueSeverity = "error" | "warning" | "info";
+
+export type ComplianceIssue = {
+  code: string;
+  message: string;
+  severity: IssueSeverity;
+  citation: string | null;
+};
+
 export type LabelReviewCompliance = {
   is_compliant: boolean;
   issues: string[];
+  issues_detail: ComplianceIssue[];
 };
 
 export type LabelReviewResponse = {
@@ -90,11 +100,16 @@ export async function verifyLabel(
 
 export async function reviewLabelImage(
   payload: LabelReviewRequest,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal
 ): Promise<LabelReviewResponse> {
   const attempts = RETRY_DELAYS_MS.length + 1;
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+
     try {
       const formData = new FormData();
       formData.append("image", payload.image);
@@ -115,6 +130,7 @@ export async function reviewLabelImage(
       const response = await fetchImpl("/api/v1/review", {
         method: "POST",
         body: formData,
+        signal,
       });
 
       if (!response.ok) {
@@ -128,6 +144,10 @@ export async function reviewLabelImage(
 
       return (await response.json()) as LabelReviewResponse;
     } catch (error) {
+      // Never retry a deliberate cancellation.
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw error;
+      }
       if (attempt < attempts - 1) {
         await wait(RETRY_DELAYS_MS[attempt]);
         continue;

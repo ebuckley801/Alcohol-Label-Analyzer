@@ -1,6 +1,7 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Loader2, Trash2, X } from "lucide-react";
 import { LabelReviewResponse, reviewLabelImage } from "./api/client";
+import type { IssueSeverity } from "./api/client";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { Button } from "./components/Button";
@@ -28,6 +29,23 @@ type QueueItem = {
 
 const QUALITY_WARNING_MESSAGE_PREFIX = "Image quality may be poor";
 
+function severityBadgeVariant(severity: IssueSeverity): "danger" | "warning" | "info" {
+  if (severity === "error") {
+    return "danger";
+  }
+  if (severity === "warning") {
+    return "warning";
+  }
+  return "info";
+}
+
+// Number of labels reviewed in parallel. Bounded so a 300-label batch keeps a
+// steady throughput without overwhelming the browser or the backend/Azure quota.
+const MAX_CONCURRENT_REVIEWS = 6;
+
+// Matches the "up to 10MB" hint shown in the uploader.
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
 const defaultExpectedFields: ExpectedFields = {
   expected_brand_name: "",
   expected_alcohol_percentage: "",
@@ -39,7 +57,11 @@ function AppContent() {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [error, setError] = useState<string>("");
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [isCancelling, setIsCancelling] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
   const queueRef = useRef<QueueItem[]>([]);
+  const cancelRef = useRef<boolean>(false);
+  const abortControllersRef = useRef<Set<AbortController>>(new Set());
 
   const queueSummary = useMemo(() => {
     const total = queue.length;
@@ -97,14 +119,16 @@ function AppContent() {
     };
   }, []);
 
-  function onFileChange(event: ChangeEvent<HTMLInputElement>): void {
-    const files = Array.from(event.target.files ?? []);
+  function addFiles(files: File[]): void {
     if (files.length === 0) {
       return;
     }
 
-    const acceptedFiles = files.filter((file) => file.type.startsWith("image/"));
-    const rejectedCount = files.length - acceptedFiles.length;
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    const nonImageCount = files.length - images.length;
+
+    const acceptedFiles = images.filter((file) => file.size <= MAX_FILE_SIZE_BYTES);
+    const oversizedCount = images.length - acceptedFiles.length;
 
     const newItems: QueueItem[] = acceptedFiles.map((file) => ({
       id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
@@ -115,14 +139,44 @@ function AppContent() {
       error: null,
     }));
 
-    setQueue((current) => [...current, ...newItems]);
-    setError(
-      rejectedCount > 0
-        ? `${rejectedCount} file(s) skipped because they were not recognized as images.`
-        : ""
-    );
+    if (newItems.length > 0) {
+      setQueue((current) => [...current, ...newItems]);
+    }
 
+    const messages: string[] = [];
+    if (nonImageCount > 0) {
+      messages.push(`${nonImageCount} file(s) skipped (not images).`);
+    }
+    if (oversizedCount > 0) {
+      messages.push(`${oversizedCount} file(s) skipped (larger than 10MB).`);
+    }
+    setError(messages.join(" "));
+  }
+
+  function onFileChange(event: ChangeEvent<HTMLInputElement>): void {
+    addFiles(Array.from(event.target.files ?? []));
     event.target.value = "";
+  }
+
+  function onDrop(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    setIsDragging(false);
+    if (isProcessing) {
+      return;
+    }
+    addFiles(Array.from(event.dataTransfer.files ?? []));
+  }
+
+  function onDragOver(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    if (!isProcessing) {
+      setIsDragging(true);
+    }
+  }
+
+  function onDragLeave(event: DragEvent<HTMLLabelElement>): void {
+    event.preventDefault();
+    setIsDragging(false);
   }
 
   function removeQueueItem(id: string): void {
@@ -168,7 +222,8 @@ function AppContent() {
             <p className="meta">{(item.file.size / 1024).toFixed(1)} KB</p>
           </div>
           <div className="flex gap-2">
-            <Badge variant={hasQualityWarning ? "warning" : "success"}>
+            {hasQualityWarning && <Badge variant="warning">Quality</Badge>}
+            <Badge variant={item.result.compliance.is_compliant ? "success" : "danger"}>
               {item.result.compliance.is_compliant ? "Compliant" : "Non-Compliant"}
             </Badge>
           </div>
@@ -202,7 +257,9 @@ function AppContent() {
                   Alcohol %
                 </p>
                 <p className="text-sm font-medium text-gray-900 dark:text-gray-50">
-                  {item.result.extraction.alcohol_percentage || "Not detected"}
+                  {item.result.extraction.alcohol_percentage !== null
+                    ? `${item.result.extraction.alcohol_percentage}%`
+                    : "Not detected"}
                 </p>
               </div>
               <div>
@@ -246,20 +303,35 @@ function AppContent() {
               </div>
             )}
 
-            {item.result.compliance.issues.length > 0 && (
+            {item.result.compliance.issues_detail.length > 0 && (
               <div>
                 <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-2">
                   Compliance Issues
                 </p>
-                <ul>
-                  {item.result.compliance.issues.map((issue) => (
-                    <li key={issue}>{issue}</li>
+                <ul className="space-y-2">
+                  {item.result.compliance.issues_detail.map((issue) => (
+                    <li
+                      key={issue.code}
+                      className="rounded-lg border border-gray-200 p-2 text-sm dark:border-gray-700"
+                    >
+                      <div className="flex items-start gap-2">
+                        <Badge variant={severityBadgeVariant(issue.severity)}>
+                          {issue.severity.toUpperCase()}
+                        </Badge>
+                        <span className="text-gray-800 dark:text-gray-100">{issue.message}</span>
+                      </div>
+                      {issue.citation && (
+                        <p className="mt-1 pl-1 text-xs text-gray-500 dark:text-gray-400">
+                          {issue.citation}
+                        </p>
+                      )}
+                    </li>
                   ))}
                 </ul>
               </div>
             )}
 
-            {item.result.compliance.issues.length === 0 && (
+            {item.result.compliance.issues_detail.length === 0 && (
               <div className="rounded-lg bg-green-50 p-3 text-sm text-green-700 dark:bg-green-900/20 dark:text-green-200">
                 ✓ No compliance issues.
               </div>
@@ -283,13 +355,19 @@ function AppContent() {
   async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
 
-    if (queue.length === 0) {
+    const pendingItems = queueRef.current.filter(
+      (item) => item.status === "queued" || item.status === "failed"
+    );
+
+    if (pendingItems.length === 0) {
       setError("Add at least one label image before running review.");
       return;
     }
 
     setError("");
     setIsProcessing(true);
+    setIsCancelling(false);
+    cancelRef.current = false;
 
     const parsedAlcohol = expectedFields.expected_alcohol_percentage
       ? Number(expectedFields.expected_alcohol_percentage)
@@ -298,41 +376,97 @@ function AppContent() {
     const normalizedExpectedAlcohol =
       parsedAlcohol !== undefined && Number.isFinite(parsedAlcohol) ? parsedAlcohol : undefined;
 
-    for (const queuedItem of queue) {
-      setQueue((current) =>
-        current.map((item) =>
-          item.id === queuedItem.id ? { ...item, status: "processing", error: null } : item
-        )
-      );
+    // Reset previously-failed items back to queued so a re-run retries them.
+    setQueue((current) =>
+      current.map((item) =>
+        item.status === "failed" ? { ...item, status: "queued", error: null } : item
+      )
+    );
 
-      try {
-        const response = await reviewLabelImage({
-          image: queuedItem.file,
-          expected_brand_name: expectedFields.expected_brand_name || undefined,
-          expected_alcohol_percentage: normalizedExpectedAlcohol,
-          expected_origin_country: expectedFields.expected_origin_country || undefined,
-        });
+    // Shared cursor consumed by a fixed pool of workers -> bounded concurrency.
+    let cursor = 0;
+
+    async function worker(): Promise<void> {
+      while (true) {
+        if (cancelRef.current) {
+          return;
+        }
+
+        const index = cursor;
+        cursor += 1;
+        if (index >= pendingItems.length) {
+          return;
+        }
+
+        const queuedItem = pendingItems[index];
 
         setQueue((current) =>
           current.map((item) =>
-            item.id === queuedItem.id
-              ? { ...item, status: "complete", result: response, error: null }
-              : item
+            item.id === queuedItem.id ? { ...item, status: "processing", error: null } : item
           )
         );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unknown error";
-        setQueue((current) =>
-          current.map((item) =>
-            item.id === queuedItem.id
-              ? { ...item, status: "failed", result: null, error: message }
-              : item
-          )
-        );
+
+        const controller = new AbortController();
+        abortControllersRef.current.add(controller);
+
+        try {
+          const response = await reviewLabelImage(
+            {
+              image: queuedItem.file,
+              expected_brand_name: expectedFields.expected_brand_name || undefined,
+              expected_alcohol_percentage: normalizedExpectedAlcohol,
+              expected_origin_country: expectedFields.expected_origin_country || undefined,
+            },
+            fetch,
+            controller.signal
+          );
+
+          setQueue((current) =>
+            current.map((item) =>
+              item.id === queuedItem.id
+                ? { ...item, status: "complete", result: response, error: null }
+                : item
+            )
+          );
+        } catch (err) {
+          const aborted = err instanceof DOMException && err.name === "AbortError";
+          setQueue((current) =>
+            current.map((item) =>
+              item.id === queuedItem.id
+                ? aborted
+                  ? { ...item, status: "queued", result: null, error: null }
+                  : {
+                      ...item,
+                      status: "failed",
+                      result: null,
+                      error: err instanceof Error ? err.message : "Unknown error",
+                    }
+                : item
+            )
+          );
+        } finally {
+          abortControllersRef.current.delete(controller);
+        }
       }
     }
 
+    const workerCount = Math.min(MAX_CONCURRENT_REVIEWS, pendingItems.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    abortControllersRef.current.clear();
     setIsProcessing(false);
+    setIsCancelling(false);
+    cancelRef.current = false;
+  }
+
+  function cancelProcessing(): void {
+    if (!isProcessing) {
+      return;
+    }
+    cancelRef.current = true;
+    setIsCancelling(true);
+    abortControllersRef.current.forEach((controller) => controller.abort());
+    abortControllersRef.current.clear();
   }
 
   return (
@@ -351,7 +485,13 @@ function AppContent() {
         <form onSubmit={onSubmit} className="form">
           {/* File Upload */}
           <div>
-            <label htmlFor="file-input" className="uploader">
+            <label
+              htmlFor="file-input"
+              className={`uploader${isDragging ? " uploader--dragging" : ""}`}
+              onDrop={onDrop}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+            >
               <div className="uploader-text">📸 Click to upload or drag and drop</div>
               <div className="uploader-hint">PNG, JPG, GIF up to 10MB</div>
               <input
@@ -426,7 +566,7 @@ function AppContent() {
           <div className="actions pt-2">
             <Button
               type="submit"
-              disabled={isProcessing || queue.length === 0}
+              disabled={isProcessing || queueSummary.pending === 0}
             >
               {isProcessing ? (
                 <>
@@ -437,6 +577,18 @@ function AppContent() {
                 "Run Review Queue"
               )}
             </Button>
+
+            {isProcessing && (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={cancelProcessing}
+                disabled={isCancelling}
+              >
+                <X className="w-4 h-4" />
+                {isCancelling ? "Cancelling..." : "Cancel"}
+              </Button>
+            )}
 
             <Button
               type="button"
@@ -481,6 +633,38 @@ function AppContent() {
             <StatsCard label="Completed" value={queueSummary.complete} color="green" />
             <StatsCard label="Failed" value={queueSummary.failed} color="red" />
             <StatsCard label="Pending" value={queueSummary.pending} color="yellow" />
+          </div>
+        )}
+
+        {/* Progress Bar */}
+        {queue.length > 0 && (
+          <div className="mt-4" aria-live="polite">
+            <div className="flex justify-between text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+              <span>
+                {queueSummary.complete + queueSummary.failed} of {queueSummary.total} processed
+                {isProcessing ? ` (${MAX_CONCURRENT_REVIEWS} at a time)` : ""}
+              </span>
+              <span>
+                {queueSummary.total > 0
+                  ? Math.round(
+                      ((queueSummary.complete + queueSummary.failed) / queueSummary.total) * 100
+                    )
+                  : 0}
+                %
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+              <div
+                className="h-full rounded-full bg-blue-500 transition-all duration-300"
+                style={{
+                  width: `${
+                    queueSummary.total > 0
+                      ? ((queueSummary.complete + queueSummary.failed) / queueSummary.total) * 100
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
           </div>
         )}
 

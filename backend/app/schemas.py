@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -29,9 +31,20 @@ class ExtractedLabelFields(BaseModel):
     ai_assisted_fields: list[str] = Field(default_factory=list)
 
 
+IssueSeverity = Literal["error", "warning", "info"]
+
+
+class ComplianceIssue(BaseModel):
+    code: str
+    message: str
+    severity: IssueSeverity
+    citation: str | None = None
+
+
 class LabelComplianceResult(BaseModel):
     is_compliant: bool
     issues: list[str]
+    issues_detail: list[ComplianceIssue] = Field(default_factory=list)
 
 
 class LabelReviewResponse(BaseModel):

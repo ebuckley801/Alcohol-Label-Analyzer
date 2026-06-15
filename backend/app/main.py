@@ -2,10 +2,12 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +38,11 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Load environment variables from backend/.env when present so a plain
+# `uvicorn app.main:app` works without manually sourcing the file. Real
+# environment variables (e.g. those set in Azure App Service) take precedence.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 app = FastAPI(title="Alcohol Label Verification API", version="0.1.0")
 verification_service: LabelVerificationService = build_label_verification_service(
@@ -103,6 +110,7 @@ def _normalize_azure_openai_endpoint(raw_endpoint: str) -> str:
     return normalized
 
 
+@lru_cache(maxsize=1)
 def _build_vision_service() -> VisionExtractor:
     provider = os.getenv("VISION_PROVIDER", "azure_ai_vision").strip().lower()
     if provider == "azure_ai_vision":

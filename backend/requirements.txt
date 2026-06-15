@@ -1,5 +1,5 @@
 azure-ai-vision-imageanalysis==1.0.0
-azure-identity==1.23.0
+azure-identity==1.25.3
 fastapi==0.115.8
 gunicorn==23.0.0
 httpx==0.28.1

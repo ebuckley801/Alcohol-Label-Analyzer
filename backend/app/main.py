@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -41,8 +40,15 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables from backend/.env when present so a plain
 # `uvicorn app.main:app` works without manually sourcing the file. Real
-# environment variables (e.g. those set in Azure App Service) take precedence.
-load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+# environment variables (e.g. those set in Azure App Service or Vercel project
+# settings) take precedence. python-dotenv is optional: serverless hosts inject
+# env vars directly and may not ship the package, so a missing import is ignored.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+except ModuleNotFoundError:
+    logger.info("python-dotenv not installed; relying on process environment variables")
 
 app = FastAPI(title="Alcohol Label Verification API", version="0.1.0")
 verification_service: LabelVerificationService = build_label_verification_service(

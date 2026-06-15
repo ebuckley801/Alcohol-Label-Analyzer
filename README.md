@@ -1,6 +1,23 @@
 # Treasury Take Home
 
-Full-stack scaffold for an Azure-deployed alcohol label verification system.
+**Alcohol Label Verifier** is a full-stack prototype that automates pre-market
+review of alcohol beverage labels against U.S. TTB regulations. Upload a label
+image (or a batch of up to ~300) and it uses **Azure AI Vision** OCR — with an
+optional **Azure OpenAI** fallback for low-confidence captures — to extract the
+brand name, class/type, alcohol content, net contents, origin, and government
+health warning, then runs a **commodity-aware compliance engine**
+(beer / wine / spirits) that flags issues with a severity
+(`error` / `warning` / `info`) and the relevant **CFR citation**.
+
+Checks include the mandated government warning (word-for-word, uppercase header,
+relative type-size), wine sulfite declarations, responsible-party
+(bottler/importer) presence, standard-of-fill, ABV plausibility and proof/ABV
+consistency, recognized class/type designations, and cross-matching against
+submitted application values.
+
+**Stack:** FastAPI · Python 3.13 · React · TypeScript · Vite · Tailwind ·
+Azure AI Vision · Azure OpenAI. Batch review runs client-side with bounded
+concurrency; CSV export included.
 
 ## Structure
 - `backend/`: FastAPI API + static hosting entrypoint for deployed frontend bundle
